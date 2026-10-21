@@ -20,6 +20,11 @@ final class HUDPictureRendererTests: XCTestCase {
         let settings = SettingsStore(defaults: UserDefaults(suiteName: suite)!, defaultAgents: DemoData.agents)
         let store = UsageStore(provider: DemoUsageProvider(), settings: settings, clock: { DemoClock.now })
         store.replace(report: DemoUsageProvider.report(agents: settings.agents, historyHours: UsageStore.historyHours, now: DemoClock.now))
+        // The glow is drawn only while something waits on the user: the demo's requests wait.
+        PermissionRequests.shared.seedDemo(now: DemoClock.now)
+        addTeardownBlock { @MainActor in
+            for request in PermissionRequests.shared.pending { PermissionRequests.shared.withdraw(request.id) }
+        }
         return store
     }()
 

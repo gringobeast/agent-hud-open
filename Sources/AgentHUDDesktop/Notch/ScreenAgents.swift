@@ -69,9 +69,20 @@ struct ScreenAgents {
         }
     }
 
-    /// This screen's glow under its own settings, drawn from its own parts and pace.
+    /// Whether anything of a shown agent waits on the user: a session waiting for an approval or an answer, or a
+    /// permission request its client asked (`UsageStore.isWaitingOnUser`).
+    var anyAgentWaiting: Bool {
+        guard order.narrows else { return store.isWaitingOnUser }
+        return PermissionRequests.shared.pending.contains { order.shows($0.vendor) }
+            || store.view.sessions.contains { session in
+                session.phase.state == .waitingForApproval
+                    && ((session.source.agentVendor ?? session.source.vendor).map(order.shows) ?? false)
+            }
+    }
+
+    /// This screen's glow under its own settings, at its own pace, shown only while a shown agent waits on the user.
     func glowAppearance(light: Bool, on screen: String) -> GlowAppearance {
         guard order.narrows else { return store.glowAppearance(light: light, on: screen) }
-        return store.glowAppearance(light: light, on: screen, levels: glowSegments.map(\.level), anyAgentActive: anyAgentActive)
+        return store.glowAppearance(on: screen, anyAgentActive: anyAgentActive, waiting: anyAgentWaiting)
     }
 }

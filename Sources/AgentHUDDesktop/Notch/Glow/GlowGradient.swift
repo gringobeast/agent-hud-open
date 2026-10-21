@@ -71,12 +71,39 @@ public struct GlowAppearance: Hashable, Sendable {
             hidden: false
         )
     }
+
+    /// The glow the live HUD draws: hidden unless a session waits on its user, and then one warm yellow
+    /// (`GlowGradient.waitingStops`) in place of the quota's colours, at the brightness and pace `resolve` gives it.
+    /// A pause does not grey it: a question asked of the user is still asked, and its card still shows.
+    /// - waiting: a session waits for an approval or an answer, or a permission request waits on the HUD.
+    /// - anyAgentActive: as in `resolve`; a waiting session is in flight, so it is the working pace whenever this shows.
+    public static func waitingOnUser(
+        _ waiting: Bool,
+        anyAgentActive: Bool,
+        glow: GlowSettings
+    ) -> GlowAppearance {
+        let paced = resolve(levels: [.ok], paused: false, anyAgentActive: anyAgentActive, glow: glow)
+        // The stops stay yellow while hidden, so showing and hiding it never rebuilds the glow's materials.
+        return GlowAppearance(
+            stops: GlowGradient.waitingStops, peakOpacity: paced.peakOpacity, troughOpacity: paced.troughOpacity,
+            breathing: paced.breathing, breathSeconds: paced.breathSeconds, hidden: !waiting
+        )
+    }
 }
 
 public enum GlowGradient {
     public static let idleStops = [
         GradientStop(color: StatusPalette.idle, location: 0),
         GradientStop(color: StatusPalette.idle, location: 1),
+    ]
+
+    /// The one colour the glow takes while a session waits on its user (`GlowAppearance.waitingOnUser`).
+    public static let waitingColor = RGBA(hex: 0xFFC83D)
+
+    /// `waitingColor` from end to end: the glow says a session waits, not how much quota is left.
+    public static let waitingStops = [
+        GradientStop(color: waitingColor, location: 0),
+        GradientStop(color: waitingColor, location: 1),
     ]
 
     /// Stop i of n sits at (i + 0.5) / n so neighbouring colors blend naturally; the ends clamp to the outer colors.

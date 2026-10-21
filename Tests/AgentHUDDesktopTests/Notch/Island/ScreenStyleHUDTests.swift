@@ -307,6 +307,9 @@ final class ScreenStyleHUDTests: XCTestCase {
         let store = UsageStore(provider: DemoUsageProvider(), settings: settings)
         store.replace(report: DemoUsageProvider.report(agents: settings.agents, historyHours: UsageStore.historyHours, now: Date()))
         settings.panelLayout.propose(.own(PanelLayout(style: PanelStyle(width: PanelStyle.widthRange.upperBound))), for: key)
+        // The glow is drawn only while something waits on the user: the demo's requests wait.
+        PermissionRequests.shared.seedDemo(now: Date())
+        defer { for request in PermissionRequests.shared.pending { PermissionRequests.shared.withdraw(request.id) } }
         let hud = ScreenHUD(key: key, screen: screen, store: store, settings: settings)
         defer { hud.close() }
         hud.forceOpen()

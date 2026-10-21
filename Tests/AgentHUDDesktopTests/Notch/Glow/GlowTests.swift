@@ -61,19 +61,60 @@ final class GlowAppearanceTests: XCTestCase {
         XCTAssertFalse(a.hidden)
     }
 
+    func testWaitingOnUserIsOneWarmYellowAtTheResolvedPace() {
+        let settings = Settings()
+        let working = GlowAppearance.waitingOnUser(true, anyAgentActive: true, glow: settings.glow)
+        let quota = GlowAppearance.resolve(levels: [.ok, .critical], paused: false, anyAgentActive: true, glow: settings.glow)
+        XCTAssertFalse(working.hidden)
+        XCTAssertEqual(working.stops, GlowGradient.waitingStops)
+        XCTAssertEqual(Set(working.stops.map(\.color.hexString)), ["#ffc83d"], "no quota colours")
+        XCTAssertEqual(working.peakOpacity, quota.peakOpacity, accuracy: 0.001, "the glow's brightness still applies")
+        XCTAssertEqual(working.troughOpacity, quota.troughOpacity, accuracy: 0.001)
+        XCTAssertTrue(working.breathing)
+        XCTAssertEqual(working.breathSeconds, settings.breathSeconds)
+        let idle = GlowAppearance.waitingOnUser(true, anyAgentActive: false, glow: settings.glow)
+        XCTAssertEqual(idle.breathSeconds, settings.idleBreathSeconds)
+    }
+
+    func testNothingWaitingHidesTheGlowButKeepsItsColour() {
+        let a = GlowAppearance.waitingOnUser(false, anyAgentActive: true, glow: GlowSettings())
+        XCTAssertTrue(a.hidden)
+        XCTAssertEqual(a.stops, GlowGradient.waitingStops, "showing it again rebuilds nothing")
+    }
+
+    /// The live glow shows only while something waits on the user; a pause no longer greys it, and hiding the glow
+    /// from the menu still hides it whatever waits.
     @MainActor
-    func testGlowFollowsPauseAndHide() async {
+    func testGlowShowsOnlyWhileSomethingWaitsOnTheUser() async {
+        let requests = PermissionRequests.shared
+        for request in requests.pending { requests.withdraw(request.id) }
+        defer { for request in requests.pending { requests.withdraw(request.id) } }
         let defaults = UserDefaults(suiteName: "AgentHUDTests.\(UUID().uuidString)")!
         let store = UsageStore(provider: DemoUsageProvider(), settings: SettingsStore(defaults: defaults, defaultAgents: DemoData.agents))
         await store.refresh()
-        XCTAssertTrue(store.glowAppearance(light: false).breathing)
+        let sessionWaits = store.view.sessions.contains { $0.phase.state == .waitingForApproval }
+        XCTAssertEqual(store.isWaitingOnUser, sessionWaits)
+        XCTAssertEqual(store.glowAppearance(light: false).hidden, !sessionWaits)
+
+        requests.seedDemo(now: store.now)
+        XCTAssertFalse(requests.pending.isEmpty)
+        XCTAssertTrue(store.isWaitingOnUser)
+        let shown = store.glowAppearance(light: false)
+        XCTAssertFalse(shown.hidden)
+        XCTAssertEqual(shown.stops, GlowGradient.waitingStops)
+        XCTAssertTrue(shown.breathing)
+        XCTAssertEqual(store.glowAppearance(light: true), shown, "a light screen draws the same yellow")
+
         store.pause(for: 3600)
         XCTAssertTrue(store.isPaused)
-        XCTAssertFalse(store.glowAppearance(light: false).breathing)
+        XCTAssertFalse(store.glowAppearance(light: false).hidden, "a question asked is still asked while paused")
         store.resume()
-        XCTAssertFalse(store.isPaused)
         store.glowHidden = true
         XCTAssertTrue(store.glowAppearance(light: false).hidden)
+        store.glowHidden = false
+
+        for request in requests.pending { requests.withdraw(request.id) }
+        XCTAssertEqual(store.glowAppearance(light: false).hidden, !store.view.sessions.contains { $0.phase.state == .waitingForApproval })
     }
 
     func testLegacyIdleKeysAreIgnored() throws {

@@ -88,8 +88,10 @@ final class ScreenLayoutHUDTests: XCTestCase {
         XCTAssertEqual(Set(glow), ["OpenClaw", "Claude"], "the notch's glow has only its agents' colours")
         XCTAssertEqual(glow.first, "OpenClaw", "in the list's order")
         XCTAssertEqual(notch.agents.pulseVendors, notch.agents.glowSegments.map(\.vendor), "the alert pulse is placed in the same list")
-        XCTAssertEqual(notch.agents.glowAppearance(light: false, on: key).stops,
-                       GlowGradient.stops(levels: notch.agents.glowSegments.map(\.level), light: false))
+        XCTAssertEqual(notch.agents.glowAppearance(light: false, on: key).stops, GlowGradient.waitingStops,
+                       "the glow is one yellow, never the agents' quota colours")
+        XCTAssertEqual(notch.agents.glowAppearance(light: false, on: key).hidden, !notch.agents.anyAgentWaiting,
+                       "and shows only while a shown agent waits on the user")
         XCTAssertLessThan(notch.agents.glowSegments.count, store.view.glowSegments.count)
         XCTAssertEqual(Set(dock.agents.glowSegments.map { AgentArtwork.markKey($0.vendor) }), ["Kimi", "ChatGPT", "Claude"],
                        "the dock's backdrop follows its own list")
