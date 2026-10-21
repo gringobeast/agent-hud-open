@@ -7,6 +7,8 @@ struct IslandAlertCompactView: View {
     let height: CGFloat
     let onOpen: () -> Void
     var waitingRequests: [PermissionRequest] = []
+    /// The title of the session a permission request comes from (`PermissionAlertCompactView.sessionTitle(for:in:)`).
+    var permissionTitle: String? = nil
     @Environment(\.stripScale) private var scale
     @Environment(\.compactWings) private var wings
     @Environment(\.hudTheme) private var theme
@@ -25,7 +27,7 @@ struct IslandAlertCompactView: View {
         switch alert {
         case .permission(let request):
             PermissionAlertCompactView(request: request, cameraWidth: cameraWidth, height: height,
-                                       waiting: max(1, waitingRequests.count))
+                                       waiting: max(1, waitingRequests.count), title: permissionTitle)
         case .quota(let event):
             QuotaAlertCompactView(alert: event, cameraWidth: cameraWidth, height: height, onOpen: onOpen)
         case .resetCredits(let event):

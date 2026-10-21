@@ -34,7 +34,7 @@ struct CompactWings: Equatable {
     /// The halves of `alert`'s reminder on a dock set to `scale`, each measured from its text and no wider than a
     /// wing, so the pill is placed before anything is drawn. The lengths are the ones the reminders' views use.
     @MainActor
-    static func dock(for alert: IslandAlert, waiting: Int = 1, scale: CGFloat) -> CompactWings {
+    static func dock(for alert: IslandAlert, waiting: Int = 1, title: String? = nil, scale: CGFloat) -> CompactWings {
         let scale = max(1, scale)
         func s(_ value: CGFloat) -> CGFloat { (value * scale).rounded() }
         func width(_ text: String, _ font: NSFont) -> CGFloat { ceil((text as NSString).size(withAttributes: [.font: font]).width) }
@@ -54,7 +54,7 @@ struct CompactWings: Equatable {
             who = event.agentVendor; what = IslandAlertCompactView.replyStatus; mark = symbol("text.bubble", t(16))
             status = .systemFont(ofSize: w(12), weight: .medium)
         case .permission(let request):
-            who = request.project ?? request.vendor; what = PermissionAlertCompactView.status(of: request)
+            who = PermissionAlertCompactView.name(of: request, title: title); what = PermissionAlertCompactView.status(of: request)
             mark = symbol("hand.raised.fill", t(14))
             status = .systemFont(ofSize: w(12), weight: .medium)
             if waiting > 1 {
@@ -582,9 +582,10 @@ struct IslandRootView: View {
         } else if let alert {
             if hidesSilhouette {
                 let row = Self.dockCompactRow(scale: stripScale)
-                let wings = CompactWings.dock(for: alert, waiting: max(1, waitingRequests.count), scale: stripScale)
+                let title = PermissionAlertCompactView.sessionTitle(for: alert, in: store)
+                let wings = CompactWings.dock(for: alert, waiting: max(1, waitingRequests.count), title: title, scale: stripScale)
                 IslandAlertCompactView(alert: alert, cameraWidth: 0, height: row.height, onOpen: onOpenAlert,
-                                       waitingRequests: waitingRequests)
+                                       waitingRequests: waitingRequests, permissionTitle: title)
                     .environment(\.stripScale, max(1, stripScale))
                     .environment(\.compactWings, wings)
                     .padding(.vertical, row.inset)
@@ -595,7 +596,8 @@ struct IslandRootView: View {
                 IslandAlertCompactView(alert: alert,
                                       cameraWidth: collapsedSize.width - collapsedTopRadius * 2,
                                       height: max(38, collapsedSize.height), onOpen: onOpenAlert,
-                                      waitingRequests: waitingRequests)
+                                      waitingRequests: waitingRequests,
+                                      permissionTitle: PermissionAlertCompactView.sessionTitle(for: alert, in: store))
                     .id(alert.id)
                     .transition(.opacity.animation(.easeOut(duration: 0.2).delay(0.08)))
             }

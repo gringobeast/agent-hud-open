@@ -59,6 +59,8 @@ struct PermissionAlertCompactView: View {
     let height: CGFloat
     /// Every request waiting for this user, on any screen. One is the card itself and needs no number.
     var waiting = 1
+    /// The title of the session asking (`sessionTitle(for:in:)`); nil names it by its folder instead.
+    var title: String? = nil
     @Environment(\.stripScale) private var scale
     @Environment(\.compactWings) private var wings
     @Environment(\.permissionColor) private var color
@@ -67,6 +69,25 @@ struct PermissionAlertCompactView: View {
     static func status(of request: PermissionRequest) -> String {
         request.isQuestion ? L10n.text("待回答", "Question")
             : request.isPlan ? L10n.text("计划待审", "Plan") : L10n.text("待批准", "Waiting")
+    }
+
+    /// What a request's reminder names it by: the title of the session asking, else its folder, else its client.
+    static func name(of request: PermissionRequest, title: String?) -> String {
+        title ?? request.project ?? request.vendor
+    }
+
+    /// The title of the session a waiting request comes from, as the session list shows it, matched by the session id
+    /// the request carries (`ReportView.session(_:)`). Nil for any other reminder, for a session not reported, and for a
+    /// title that says nothing the folder does not: empty, the untitled placeholder, or the folder's own name.
+    @MainActor
+    static func sessionTitle(for alert: IslandAlert?, in store: UsageStore?) -> String? {
+        guard case .permission(let request)? = alert, let session = store?.view.session(request.sessionID)?.session
+        else { return nil }
+        let title = session.task.trimmingCharacters(in: .whitespacesAndNewlines)
+        let placeholders: Set<String> = ["（未命名会话）", "(untitled session)", "Untitled session"]
+        guard !title.isEmpty, !placeholders.contains(title), title != request.project, title != session.terminal
+        else { return nil }
+        return title
     }
 
     /// A length at the scale of the dock this reminder grows from.
@@ -80,8 +101,8 @@ struct PermissionAlertCompactView: View {
         HStack(spacing: 0) {
             HStack(spacing: s(8)) {
                 ReminderMarkView(vendor: request.vendor, size: s(17), mark: .request(request))
-                Text(request.project ?? request.vendor)
-                    .font(.ui(w(13), .semibold)).lineLimit(1).minimumScaleFactor(0.78)
+                Text(Self.name(of: request, title: title))
+                    .font(.ui(w(13), .semibold)).lineLimit(1).minimumScaleFactor(0.78).truncationMode(.tail)
             }.frame(width: wings?.leading ?? s(IslandController.alertWingWidth), alignment: .leading)
             Color.clear.frame(width: wings?.gap ?? cameraWidth)
             HStack(spacing: s(7)) {
@@ -94,7 +115,7 @@ struct PermissionAlertCompactView: View {
         .foregroundStyle(color.text)
         .padding(.horizontal, wings?.padding ?? s(IslandController.alertSidePadding)).frame(height: height)
         .accessibilityIdentifier("island-alert-permissionRequest")
-        .accessibilityLabel("\(request.vendor) · \(request.isQuestion ? L10n.text("在问你问题", "Asks a question") : request.isPlan ? L10n.text("有计划待审", "Has a plan to review") : L10n.text("等待批准", "Needs approval")) · \(request.summary)"
+        .accessibilityLabel("\(request.vendor)\(title.map { " · " + $0 } ?? "") · \(request.isQuestion ? L10n.text("在问你问题", "Asks a question") : request.isPlan ? L10n.text("有计划待审", "Has a plan to review") : L10n.text("等待批准", "Needs approval")) · \(request.summary)"
                             + (waiting > 1 ? " · " + L10n.text("共 \(waiting) 个", "\(waiting) waiting") : ""))
     }
 }

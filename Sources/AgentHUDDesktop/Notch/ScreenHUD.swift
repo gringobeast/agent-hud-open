@@ -204,7 +204,8 @@ final class ScreenHUD {
 
     /// The halves of the reminder on show, as its view lays them out on this dock.
     private var compactWings: CompactWings? {
-        activeAlert.map { CompactWings.dock(for: $0, waiting: max(1, PermissionRequests.shared.pending.count), scale: stripScale) }
+        activeAlert.map { CompactWings.dock(for: $0, waiting: max(1, PermissionRequests.shared.pending.count),
+                                            title: PermissionAlertCompactView.sessionTitle(for: $0, in: store), scale: stripScale) }
     }
 
     /// A detached card's place: beside the strip on its inner side, centred on the mark and kept on screen.
