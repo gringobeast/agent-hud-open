@@ -31,11 +31,35 @@ public struct TranscriptAccumulator: Hashable, Sendable, Codable {
         var observedAt: Date
         /// What the agent said, kept only while the app runs: the ledger stores no conversation text.
         var message: String?
+        /// Everything the agent said since the turn's last input, its prompt or a tool's result: the reply the user reads
+        /// once the turn is over. Kept only while the app runs, like `message`.
+        var reply = Reply()
         /// Why the turn ended, when the log said.
         var outcome: TurnOutcome?
         enum CodingKeys: String, CodingKey { case startedAt, state, observedAt, outcome }
     }
+    /// The words of a reply, block by block, each block once however often its line is read.
+    struct Reply: Hashable, Sendable {
+        private(set) var blocks: [String] = []
+        private var keys: Set<String> = []
+        private var length = 0
+
+        /// Adds a block of visible words, unless the same line gave it already. Once the reply is longer than a reminder
+        /// keeps, later blocks are left out: the reminder cuts it there anyway.
+        mutating func add(_ text: String, key: String) {
+            guard length <= SessionCompletion.replyLength, keys.insert(key).inserted else { return }
+            blocks.append(text)
+            length += text.count
+        }
+
+        /// The blocks as one text, a blank line between them; nil before any.
+        var text: String? { blocks.isEmpty ? nil : blocks.joined(separator: "\n\n") }
+    }
     private var currentTurn: Turn?
+    /// What the current turn's calls spent, by consumer, from its prompt on: the main log's responses, the sub-agent lines
+    /// it carries itself included, each counted once. nil until a prompt starts a turn here, so a turn whose start this
+    /// summary never read has no total rather than a partial one.
+    private var turnUsage: [String: TokenKinds]?
     /// What the main log says its turn is busy with: open calls, the kind of work they do, its newest line.
     private var activity: SessionActivity?
     private var completions: [SessionCompletion]?
@@ -87,16 +111,27 @@ public struct TranscriptAccumulator: Hashable, Sendable, Codable {
             if task == nil, event.role == .user, let text = event.text {
                 task = SessionTitle.from(text)
             }
+            // A response's usage is counted before its line can end the turn, so the turn's completion includes it.
+            let counted = countUsage(event)
             // A sub-agent's own log follows its turn too, so its session can tell that the agent is still at work; only
             // a main log records prompts, compactions, completions and the answer.
             if isSubagent || !event.isSidechain {
                 if !isSubagent, event.isCompaction { marks.append(.init(.compaction, at: event.timestamp)) }
                 if !isSubagent { note(event) }
+                // The reply is what the agent says after the turn's last input: any user line, a prompt or a tool's
+                // result, starts it afresh. It is taken before the line can end the turn, so its completion carries it.
+                if !isSubagent, event.role == .user {
+                    currentTurn?.reply = Reply()
+                } else if !isSubagent, let text = Self.visibleText(event) {
+                    currentTurn?.reply.add(text, key: "\(event.offset ?? -1)|\(event.messageId ?? "")|"
+                        + "\(RecordCoding.milliseconds(event.timestamp))|\(text.hashValue)")
+                }
                 if event.isPrompt {
                     // Claude Code records an interruption as a user line; that turn is over without a completion.
                     let interrupted = Self.isInterruption(event)
                     if !interrupted, !isSubagent { marks.append(.init(.prompt, at: event.timestamp)) }
                     if event.timestamp >= (currentTurn?.observedAt ?? .distantPast) {
+                        if !interrupted, !isSubagent { turnUsage = [:] }
                         currentTurn = Turn(startedAt: interrupted ? currentTurn?.startedAt : event.timestamp,
                             state: interrupted ? .ended : .running, observedAt: event.timestamp, outcome: interrupted ? .interrupted : nil)
                     }
@@ -105,7 +140,7 @@ public struct TranscriptAccumulator: Hashable, Sendable, Codable {
                     // by a usage limit until it lifts or the next prompt, or failed. No Stop hook summary follows it.
                     if (currentTurn?.state ?? .running) == .running, event.timestamp >= (currentTurn?.observedAt ?? .distantPast) {
                         currentTurn = Turn(startedAt: currentTurn?.startedAt, state: .ended, observedAt: event.timestamp,
-                                           message: currentTurn?.message,
+                                           message: currentTurn?.message, reply: currentTurn?.reply ?? Reply(),
                                            outcome: Self.limitErrors.contains(error) ? .limited(resetsAt: event.limitResetsAt) : .failed)
                     }
                 } else if event.role == .assistant, event.model != "<synthetic>" {
@@ -119,7 +154,8 @@ public struct TranscriptAccumulator: Hashable, Sendable, Codable {
                         }
                         if !duplicate, event.timestamp >= (currentTurn?.observedAt ?? .distantPast) {
                             currentTurn = Turn(startedAt: currentTurn?.startedAt, state: .completed, observedAt: event.timestamp,
-                                               message: currentTurn?.message, outcome: .completed)
+                                               message: currentTurn?.message, reply: currentTurn?.reply ?? Reply(),
+                                               outcome: .completed)
                         }
                     } else if isSubagent, event.returnsStructuredOutput, event.timestamp >= (currentTurn?.observedAt ?? .distantPast) {
                         // A workflow agent hands back its result and stops without an end_turn.
@@ -138,12 +174,12 @@ public struct TranscriptAccumulator: Hashable, Sendable, Codable {
                     // A tool that ends the turn, as the desktop app's next-step box does, leaves no answer and no Stop hook
                     // summary after its result: the result is the turn's last line.
                     currentTurn = Turn(startedAt: currentTurn?.startedAt, state: .completed, observedAt: event.timestamp,
-                                       message: currentTurn?.message, outcome: .completed)
+                                       message: currentTurn?.message, reply: currentTurn?.reply ?? Reply(), outcome: .completed)
                 } else if event.isStop, currentTurn?.state == .running, event.timestamp >= currentTurn!.observedAt {
                     // Claude Code ran the Stop hooks or timed the turn once the agent stopped: a turn no end_turn
                     // completed, such as one whose answer was cut off or failed, is over as well.
                     currentTurn = Turn(startedAt: currentTurn?.startedAt, state: .completed, observedAt: event.timestamp,
-                                       message: currentTurn?.message)
+                                       message: currentTurn?.message, reply: currentTurn?.reply ?? Reply())
                 }
                 // Only the conversation dates a running turn. An attachment or queue record can carry a later time than
                 // the answer written after it, which would then look older than the turn and leave it running.
@@ -151,27 +187,12 @@ public struct TranscriptAccumulator: Hashable, Sendable, Codable {
                     currentTurn?.observedAt = event.timestamp
                 }
                 // The visible answer, taken from whichever block carried it last.
-                if !isSubagent, event.role == .assistant, event.model != "<synthetic>",
-                   let text = event.text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty {
-                    currentTurn?.message = text
+                if !isSubagent, let text = Self.visibleText(event) {
+                    currentTurn?.message = String(text.prefix(Self.turnMessageLength))
                 }
             }
-            guard event.hasUsage else { continue }
-            let key: String
-            if let usageKey = event.usageKey {
-                // Same API response written as several lines: count its usage once.
-                guard !recentUsageKeys.contains(usageKey) else { continue }
-                recentUsageKeys.append(usageKey)
-                if recentUsageKeys.count > Self.retainedUsageKeys { recentUsageKeys.removeFirst(recentUsageKeys.count - Self.retainedUsageKeys) }
-                key = usageKey
-            } else if let offset = event.offset {
-                // Without a response id, the line's place in its log keys it, whichever page is read first.
-                key = "o:\(offset)"
-            } else {
-                unkeyedUsage += 1
-                key = "n:\(unkeyedUsage)"
-            }
-            let mapped = ClaudeModelMapper.agentId(for: event.model) ?? "claude-model:Unknown"
+            guard let counted else { continue }
+            let key = counted.key, mapped = counted.agentId
             tokensIn += event.tokensIn
             tokensOut += event.outputTokens
             cacheReadTokens += event.cacheReadTokens
@@ -187,6 +208,50 @@ public struct TranscriptAccumulator: Hashable, Sendable, Codable {
         activity?.settle()
         return added
     }
+
+    /// The ledger key and consumer of the usage a line adds, which the current turn's total takes too; nil for a line
+    /// without usage or a response already counted.
+    private mutating func countUsage(_ event: TranscriptEvent) -> (key: String, agentId: String)? {
+        guard event.hasUsage else { return nil }
+        let key: String
+        if let usageKey = event.usageKey {
+            // Same API response written as several lines: count its usage once.
+            guard !recentUsageKeys.contains(usageKey) else { return nil }
+            recentUsageKeys.append(usageKey)
+            if recentUsageKeys.count > Self.retainedUsageKeys { recentUsageKeys.removeFirst(recentUsageKeys.count - Self.retainedUsageKeys) }
+            key = usageKey
+        } else if let offset = event.offset {
+            // Without a response id, the line's place in its log keys it, whichever page is read first.
+            key = "o:\(offset)"
+        } else {
+            unkeyedUsage += 1
+            key = "n:\(unkeyedUsage)"
+        }
+        let mapped = ClaudeModelMapper.agentId(for: event.model) ?? "claude-model:Unknown"
+        if !isSubagent {
+            turnUsage?[mapped, default: TokenKinds()] += TokenKinds(tokensIn: event.tokensIn, tokensOut: event.outputTokens,
+                cacheRead: event.cacheReadTokens, cacheWrite: event.cacheCreationTokens, reasoning: event.thinkingTokens)
+        }
+        return (key, mapped)
+    }
+
+    /// What a turn's calls would cost at the API list prices of `ModelCatalog`; nil unless every consumer with tokens has
+    /// a price, all in one currency, so a turn with an unpriced model shows its tokens without a partial amount.
+    static func listCost(of usage: [String: TokenKinds]) -> ModelCatalog.Cost? {
+        guard let cost = ModelCatalog.cost(of: usage), cost.unpriced.isEmpty, cost.amounts.count == 1,
+              let only = cost.amounts.first else { return nil }
+        return ModelCatalog.Cost(amount: only.value, currency: only.key)
+    }
+
+    /// What an assistant line shows the user, its answer or a narration, trimmed; nil for any other line.
+    static func visibleText(_ event: TranscriptEvent) -> String? {
+        guard event.role == .assistant, event.model != "<synthetic>",
+              let text = event.text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
+        return text
+    }
+
+    /// The most of one block a turn's `message` keeps; the whole reply goes to its completion instead.
+    static let turnMessageLength = 2048
 
     /// An interruption, which Claude Code records as a user line of its own.
     static func isInterruption(_ event: TranscriptEvent) -> Bool { event.text?.hasPrefix("[Request interrupted") == true }
@@ -253,6 +318,7 @@ public struct TranscriptAccumulator: Hashable, Sendable, Codable {
         cacheReadTokens += older.cacheReadTokens
         outputByAgent.merge(older.outputByAgent, uniquingKeysWith: +)
         modelsSeen.merge(older.modelsSeen) { max($0, $1) }
+        if currentTurn == nil { turnUsage = older.turnUsage }
         currentTurn = currentTurn ?? older.currentTurn
         activity = activity ?? older.activity
         if let earlier = older.completions {
@@ -269,23 +335,35 @@ public struct TranscriptAccumulator: Hashable, Sendable, Codable {
 
     private mutating func recordCompletion(_ event: TranscriptEvent) {
         let fileName = URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
+        // The reply so far, this line's words included: the answer's later blocks bring the rest of it.
+        let reply = currentTurn?.reply.text
+        // What the turn spent up to this answer, its own response included: only for a running turn whose prompt was read
+        // here, the turn the completion is timed from.
+        let started = currentTurn?.state == .running ? currentTurn?.startedAt : nil
+        let spent = started == nil ? nil : turnUsage
+        let tokens = spent.map { $0.values.reduce(TokenKinds(), +) }.flatMap { $0.isEmpty ? nil : $0 }
         let completion = SessionCompletion(
             sessionID: sessionId ?? fileName, vendor: "Claude",
             turnID: event.messageId ?? String(RecordCoding.milliseconds(event.timestamp)),
             task: title ?? cwd.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "Claude Code",
             model: event.model.map { ClaudeModelInfo.parse($0)?.displayName ?? $0 } ?? "Claude",
-            startedAt: currentTurn?.state == .running ? currentTurn?.startedAt : nil, completedAt: event.timestamp
+            startedAt: started, completedAt: event.timestamp,
+            message: reply, reply: reply, tokens: tokens, listCost: tokens == nil ? nil : spent.flatMap(Self.listCost)
         )
         // Claude Code writes one line per content block, and every line carries the message's stop reason.
         if let index = completions?.firstIndex(where: { $0.id == completion.id }), let previous = completions?[index] {
             // Thinking and text blocks share an ID but can have timestamps tens of seconds apart.
             // Preserve the original prompt even when later blocks arrive in a subsequent indexing batch.
-            if completion.completedAt > previous.completedAt {
+            // A later block of the answer also brings more of the reply, whenever it was written.
+            let newer = completion.completedAt > previous.completedAt
+            if newer || (completion.reply != nil && completion.reply != previous.reply) {
                 completions?[index] = SessionCompletion(
                     sessionID: completion.sessionID, vendor: completion.vendor,
                     turnID: event.messageId ?? String(RecordCoding.milliseconds(event.timestamp)),
-                    task: previous.task, model: completion.model,
-                    startedAt: previous.startedAt, completedAt: completion.completedAt
+                    task: previous.task, model: newer ? completion.model : previous.model,
+                    startedAt: previous.startedAt, completedAt: max(completion.completedAt, previous.completedAt),
+                    message: completion.reply ?? previous.reply, reply: completion.reply ?? previous.reply,
+                    tokens: completion.tokens ?? previous.tokens, listCost: completion.tokens == nil ? previous.listCost : completion.listCost
                 )
             }
             return
@@ -300,6 +378,7 @@ public struct TranscriptAccumulator: Hashable, Sendable, Codable {
               !recentUsageKeys.isEmpty || completions != nil else { return }
         recentUsageKeys.removeAll()
         completions = nil
+        turnUsage = nil
     }
 
     public func build() -> TranscriptSession? {

@@ -78,10 +78,12 @@ final class ScreenHUD {
     private let alerts = IslandAlertQueue()
     var activeAlert: IslandAlert? {
         guard let alert = alerts.current?.alert else { return nil }
-        // A queued card keeps its reply, but the source's latest reading owns where its session now lives.
+        // A queued card keeps its reply, but the source's latest reading owns where its session now lives, and brings the
+        // rest of a reply whose later blocks were written after the card appeared.
         if case .completion(var event) = alert,
            let current = store.report?.completions.first(where: { $0.id == event.id }) {
             event.navigationTarget = current.navigationTarget
+            event.reply = current.reply ?? event.reply
             return .completion(event)
         }
         return alert

@@ -104,16 +104,17 @@ struct IslandAlertDetailView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(event.task).font(.ui(15, .medium)).lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
-                    if let message = event.message {
-                        Text(message).font(.ui(12)).foregroundStyle(theme.alertInk(0.68)).lineLimit(4)
-                            .fixedSize(horizontal: false, vertical: true)
+                    // The whole reply where the reader has it; a source that kept only its last paragraph shows that.
+                    if let reply = event.reply ?? event.message {
+                        CompletionReplyText(text: reply)
                     }
                 }
                 HStack {
                     Text(event.completedAt.formatted(date: .omitted, time: .shortened))
                     Spacer()
-                    if let start = event.startedAt {
-                        Text(Countdown.compact(max(0, event.completedAt.timeIntervalSince(start))))
+                    // How long the turn took, what it spent and what that costs at API list prices, as far as known.
+                    if let summary = event.turnSummary {
+                        Text(summary).lineLimit(1)
                     }
                 }.font(.tabular(11)).foregroundStyle(theme.alertInk(0.5))
                 CompletionAlertActions(hasSession: event.navigationTarget != nil,
@@ -121,6 +122,41 @@ struct IslandAlertDetailView: View {
                                        onOpenSession: onOpenSession, onOpenUsage: onOpenUsage)
             }.foregroundStyle(theme.alertText)
         }
+    }
+}
+
+/// A finished turn's reply as the agent wrote it, its Markdown drawn inline: a short one in a box its own size, a long
+/// one scrolling within `maxHeight`, so the card never grows past the screen. The pointer over the card holds it open
+/// (`IslandAlertQueue.hold(_:)`), and scrolling does not move the pointer, so the reply stays while it is read.
+private struct CompletionReplyText: View {
+    let text: String
+    var maxHeight: CGFloat = 320
+    @Environment(\.hudTheme) private var theme
+
+    /// The last reply drawn and its rendering: the island redraws its card as the pointer moves, the reply stays.
+    @MainActor private static var rendered: (text: String, value: AttributedString)?
+
+    var body: some View {
+        ViewThatFits(in: .vertical) {
+            reply
+            ScrollView { reply }.frame(height: maxHeight)
+        }
+        .frame(maxHeight: maxHeight, alignment: .top)
+        .accessibilityIdentifier("island-alert-reply")
+    }
+
+    private var reply: some View {
+        Text(Self.markdown(text)).font(.ui(12)).foregroundStyle(theme.alertInk(0.68))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .fixedSize(horizontal: false, vertical: true)
+            .textSelection(.enabled)
+    }
+
+    @MainActor private static func markdown(_ text: String) -> AttributedString {
+        if let rendered, rendered.text == text { return rendered.value }
+        let value = PermissionPlanCard.rendered(text)
+        rendered = (text, value)
+        return value
     }
 }
 

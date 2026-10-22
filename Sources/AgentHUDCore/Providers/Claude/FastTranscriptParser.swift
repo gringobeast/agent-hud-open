@@ -10,8 +10,10 @@ import Foundation
 /// Current builds write `type`, `cwd` and `sessionId` after the message; older builds wrote them first.
 public enum FastTranscriptParser {
     private static let prefixLength = 2048
-    /// How much of an assistant message is kept. Readers truncate further; this only bounds the work of reading it.
-    static let messageLength = 2048
+    /// How much of an assistant message is kept, in bytes of its JSON: room for a completion's whole reply
+    /// (`SessionCompletion.replyLength` characters, escapes and multi-byte letters included). Readers truncate further;
+    /// this only bounds the work of reading it.
+    static let messageLength = 24_576
     /// Current builds write `entrypoint`, `cwd`, `sessionId` and `version` after the message, close to the end.
     private static let tailLength = 2048
 

@@ -437,7 +437,11 @@ final class ClaudeTranscriptTests: XCTestCase {
         child.ingest(FastTranscriptParser.parse(Data(text.utf8)))
         XCTAssertEqual(child.build()?.completions, [])
         let encoded = try JSONEncoder().encode(t)
-        XCTAssertEqual(try JSONDecoder().decode(TranscriptAccumulator.self, from: encoded).build()?.completions, session.completions)
+        // The persisted completions are the live ones without what only memory keeps, such as the turn's token totals.
+        let sorted = JSONEncoder()
+        sorted.outputFormatting = .sortedKeys
+        XCTAssertEqual(try sorted.encode(try JSONDecoder().decode(TranscriptAccumulator.self, from: encoded).build()?.completions),
+                       try sorted.encode(session.completions))
         var oldCache = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
         oldCache.removeValue(forKey: "completions"); oldCache.removeValue(forKey: "turnStartedAt")
         XCTAssertEqual(try JSONDecoder().decode(TranscriptAccumulator.self, from: JSONSerialization.data(withJSONObject: oldCache)).build()?.completions, [])
@@ -457,7 +461,7 @@ final class ClaudeTranscriptTests: XCTestCase {
         XCTAssertNil(FastTranscriptParser.parseLine(line("thinking", "weighing it up"))?.text, "reasoning is not a visible answer")
 
         // A long answer costs a bounded read and is cut where the escape and the character both allow it.
-        let long = String(repeating: "写完了 \"ok\"\n", count: 400)
+        let long = String(repeating: "写完了 \"ok\"\n", count: FastTranscriptParser.messageLength / 9)
         let escaped = String(decoding: try JSONSerialization.data(withJSONObject: [long]), as: UTF8.self).dropFirst(2).dropLast(2)
         let cut = try XCTUnwrap(FastTranscriptParser.parseLine(line("text", String(escaped), id: "msg_3"))?.text)
         XCTAssertLessThanOrEqual(cut.utf8.count, FastTranscriptParser.messageLength)
@@ -477,6 +481,129 @@ final class ClaudeTranscriptTests: XCTestCase {
         XCTAssertEqual(accumulator.build()?.turn?.message, "Reading the file", "a block without text keeps the answer the turn already gave")
         accumulator.ingest([event(20, role: .user, text: "Next")])
         XCTAssertNil(accumulator.build()?.turn?.message, "a new prompt has no answer yet")
+    }
+
+    /// The reminder of a finished turn carries the whole reply: every block the agent wrote after the turn's last input,
+    /// as the desktop app writes them, one block per line with the thinking first. Words said before the last tool result
+    /// are not part of it, and a line read twice adds nothing.
+    func testACompletionCarriesTheWholeReplyAfterTheLastToolResult() throws {
+        let session = "6c2d1e3f-8b52-4a4f-9d66-1e7f3a9b0c21"
+        func assistant(_ id: String, _ block: String, stop: String, at: String) -> String {
+            #"{"parentUuid":"p","isSidechain":false,"message":{"model":"claude-opus-5-5","id":"\#(id)","type":"message","role":"assistant","content":[\#(block)],"stop_reason":"\#(stop)","stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":4}},"requestId":"req_\#(id)","type":"assistant","uuid":"u-\#(at)","timestamp":"2026-10-22T18:36:\#(at)Z","userType":"external","entrypoint":"claude-desktop","cwd":"/Users/dev/project","sessionId":"\#(session)","version":"2.1.299"}"#
+        }
+        let prompt = #"{"parentUuid":null,"isSidechain":false,"type":"user","message":{"role":"user","content":"Explain the fix."},"uuid":"u0","timestamp":"2026-10-22T18:36:00.000Z","entrypoint":"claude-desktop","cwd":"/Users/dev/project","sessionId":"\#(session)"}"#
+        let before = assistant("msg_a", #"{"type":"text","text":"Let me look at the log first."}"#, stop: "tool_use", at: "01.000")
+        let call = assistant("msg_a", #"{"type":"tool_use","id":"toolu_1","name":"Read","input":{"file_path":"/p/a.swift"}}"#, stop: "tool_use", at: "01.010")
+        let result = #"{"parentUuid":"p","isSidechain":false,"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_1","type":"tool_result","content":"file body"}]},"uuid":"u3","timestamp":"2026-10-22T18:36:02.000Z","entrypoint":"claude-desktop","cwd":"/Users/dev/project","sessionId":"\#(session)"}"#
+        let thinking = assistant("msg_b", #"{"type":"thinking","thinking":"","signature":"c2lnbmF0dXJl"}"#, stop: "end_turn", at: "08.972")
+        let answer = assistant("msg_b", ###"{"type":"text","text":"## Why\n\nThe completion never took the reply: **only Codex** passed one.\n\n- First point\n- Second point"}"###, stop: "end_turn", at: "08.978")
+        let closing = assistant("msg_b", #"{"type":"text","text":"Rebuild and try again."}"#, stop: "end_turn", at: "08.990")
+        let stop = #"{"parentUuid":"p","isSidechain":false,"type":"system","subtype":"stop_hook_summary","timestamp":"2026-10-22T18:36:11.865Z","entrypoint":"claude-desktop","sessionId":"\#(session)"}"#
+        func data(_ lines: [String]) -> Data { Data((lines.joined(separator: "\n") + "\n").utf8) }
+
+        var accumulator = TranscriptAccumulator(path: "/logs/\(session).jsonl", isSubagent: false)
+        // The thinking line ends the turn before the answer's own lines are written.
+        accumulator.ingest(FastTranscriptParser.parse(data([prompt, before, call, result, thinking])))
+        XCTAssertNil(try XCTUnwrap(accumulator.build()?.completions.last).reply, "nothing visible was said after the result yet")
+        accumulator.ingest(FastTranscriptParser.parse(data([answer, closing, stop])))
+        let expected = "## Why\n\nThe completion never took the reply: **only Codex** passed one.\n\n- First point\n- Second point"
+            + "\n\nRebuild and try again."
+        let completion = try XCTUnwrap(accumulator.build()?.completions.last)
+        XCTAssertEqual(accumulator.build()?.completions.count, 1)
+        XCTAssertEqual(completion.reply, expected, "every block after the last tool result, in order")
+        XCTAssertEqual(completion.message, "Rebuild and try again.", "the short preview stays the last paragraph")
+        XCTAssertFalse(completion.reply?.contains("Let me look") == true, "words before the last tool result are not the reply")
+
+        // Reading the same lines again adds nothing.
+        accumulator.ingest(FastTranscriptParser.parse(data([answer, closing])))
+        XCTAssertEqual(accumulator.build()?.completions.last?.reply, expected)
+
+        // The reply lives only in memory: the persisted summary and a completion report never hold it.
+        let encoded = try JSONEncoder().encode(accumulator)
+        XCTAssertFalse(String(decoding: encoded, as: UTF8.self).contains("only Codex"))
+        XCTAssertNil(try JSONDecoder().decode(TranscriptAccumulator.self, from: encoded).build()?.completions.last?.reply)
+        XCTAssertFalse(String(decoding: try JSONEncoder().encode(completion), as: UTF8.self).contains("only Codex"))
+
+        // A very long reply is cut to what a reminder keeps.
+        let long = String(repeating: "word ", count: 3000)
+        var big = TranscriptAccumulator(path: "/logs/\(session).jsonl", isSubagent: false)
+        big.ingest(FastTranscriptParser.parse(data([prompt, assistant("msg_c", #"{"type":"text","text":"\#(long)"}"#, stop: "end_turn", at: "09.000")])))
+        let cut = try XCTUnwrap(big.build()?.completions.last?.reply)
+        XCTAssertEqual(cut.count, SessionCompletion.replyLength)
+        XCTAssertTrue(cut.hasSuffix("…"))
+    }
+
+    func testACompletionCarriesTheTurnsDurationTokensAndListPriceCost() throws {
+        let previousLanguage = L10n.language
+        L10n.setLanguage(.en)
+        defer { L10n.setLanguage(previousLanguage) }
+        let session = "7d3e2f4a-9c63-4b5a-8e77-2f8a4b0c1d32"
+        func assistant(_ id: String, model: String = "claude-opus-5-5", _ block: String, stop: String, at: String,
+                       usage: String, sidechain: Bool = false) -> String {
+            #"{"parentUuid":"p","isSidechain":\#(sidechain),"message":{"model":"\#(model)","id":"\#(id)","type":"message","role":"assistant","content":[\#(block)],"stop_reason":"\#(stop)","stop_sequence":null,"usage":{\#(usage)}},"requestId":"req_\#(id)","type":"assistant","uuid":"u-\#(id)-\#(at)","timestamp":"2026-10-22T18:\#(at)Z","userType":"external","entrypoint":"cli","cwd":"/Users/dev/project","sessionId":"\#(session)","version":"2.1.299"}"#
+        }
+        func prompt(_ text: String, at: String) -> String {
+            #"{"parentUuid":null,"isSidechain":false,"type":"user","message":{"role":"user","content":"\#(text)"},"uuid":"u-\#(at)","timestamp":"2026-10-22T18:\#(at)Z","entrypoint":"cli","cwd":"/Users/dev/project","sessionId":"\#(session)"}"#
+        }
+        let text = #"{"type":"text","text":"Done."}"#
+        let earlier = [prompt("First.", at: "30:00.000"),
+                       assistant("msg_0", text, stop: "end_turn", at: "30:05.000",
+                                 usage: #""input_tokens":9000,"cache_creation_input_tokens":9000,"cache_read_input_tokens":9000,"output_tokens":9000"#)]
+        let call = assistant("msg_a", #"{"type":"tool_use","id":"toolu_1","name":"Read","input":{"file_path":"/p/a.swift"}}"#, stop: "tool_use",
+                             at: "40:01.000", usage: #""input_tokens":100,"cache_creation_input_tokens":1000,"cache_read_input_tokens":50000,"output_tokens":200"#)
+        let result = #"{"parentUuid":"p","isSidechain":false,"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_1","type":"tool_result","content":"file body"}]},"uuid":"u-r","timestamp":"2026-10-22T18:40:02.000Z","entrypoint":"cli","cwd":"/Users/dev/project","sessionId":"\#(session)"}"#
+        let finalUsage = #""input_tokens":10,"cache_creation_input_tokens":500,"cache_read_input_tokens":60000,"output_tokens":300"#
+        // The answer's thinking and text lines are one response: its usage counts once.
+        let thinking = assistant("msg_b", #"{"type":"thinking","thinking":"","signature":"c2ln"}"#, stop: "end_turn", at: "44:12.000", usage: finalUsage)
+        let answer = assistant("msg_b", text, stop: "end_turn", at: "44:12.010", usage: finalUsage)
+        func data(_ lines: [String]) -> Data { Data((lines.joined(separator: "\n") + "\n").utf8) }
+
+        var first = TranscriptAccumulator(path: "/logs/\(session).jsonl", isSubagent: false)
+        first.ingest(FastTranscriptParser.parse(data(earlier + [prompt("Fix it.", at: "40:00.000"), call, result])))
+        // The persisted summary keeps the open turn's count, so a turn read across a restart still totals from its prompt.
+        var accumulator = try JSONDecoder().decode(TranscriptAccumulator.self, from: JSONEncoder().encode(first))
+        accumulator.ingest(FastTranscriptParser.parse(data([thinking])))
+        accumulator.ingest(FastTranscriptParser.parse(data([answer])))
+        let completion = try XCTUnwrap(accumulator.build()?.completions.last)
+        XCTAssertEqual(accumulator.build()?.completions.count, 2)
+        XCTAssertEqual(try XCTUnwrap(completion.duration), 252.01, accuracy: 0.001, "from the prompt to the answer's last line")
+        // Only this turn's two responses, every kind: the earlier turn's 36,000 tokens stay out.
+        XCTAssertEqual(completion.tokens, TokenKinds(cacheWrite: 1500, input: 110, reasoning: 0, output: 500, cacheRead: 110_000))
+        XCTAssertEqual(completion.tokens?.total, 112_110)
+        // claude-opus-5-5 per million: input $4, one-hour cache write $8, cache read $0.20, output $20.
+        let cost = try XCTUnwrap(completion.listCost)
+        XCTAssertEqual(cost.currency, "USD")
+        XCTAssertEqual(cost.amount, Decimal(string: "0.04444"))
+        XCTAssertEqual(cost.amount, ModelCatalog.cost(agentId: "claude-model:claude-opus-5-5",
+            kinds: TokenKinds(cacheWrite: 1500, input: 110, output: 500, cacheRead: 110_000))?.amount, "the catalog's own price")
+        XCTAssertEqual(completion.turnSummary, "4m 12s · 112k tok · $0.04 API")
+
+        // The totals live only in memory, like the reply: a completion report never holds them.
+        let decoded = try JSONDecoder().decode(SessionCompletion.self, from: JSONEncoder().encode(completion))
+        XCTAssertNil(decoded.tokens)
+        XCTAssertNil(decoded.listCost)
+        var restored = accumulator
+        restored.ingest(FastTranscriptParser.parse(data([prompt("Again.", at: "50:00.000"),
+            assistant("msg_c", text, stop: "end_turn", at: "50:30.000", usage: #""input_tokens":1,"output_tokens":2"#)])))
+        XCTAssertEqual(restored.build()?.completions.last?.tokens?.total, 3, "a new prompt starts the count afresh")
+
+        // A model without a list price keeps its tokens and has no cost rather than a wrong one.
+        var unpriced = TranscriptAccumulator(path: "/logs/\(session).jsonl", isSubagent: false)
+        unpriced.ingest(FastTranscriptParser.parse(data([prompt("Quick one.", at: "40:00.000"),
+            assistant("msg_d", model: "claude-haiku-5-5", text, stop: "end_turn", at: "40:42.000", usage: #""input_tokens":1200,"output_tokens":34"#)])))
+        let quick = try XCTUnwrap(unpriced.build()?.completions.last)
+        XCTAssertEqual(quick.tokens?.total, 1234)
+        XCTAssertNil(quick.listCost)
+        XCTAssertEqual(quick.turnSummary, "42s · 1.2k tok")
+
+        // A turn whose prompt was never read has no total, and a source without totals shows only what it knows.
+        var partial = TranscriptAccumulator(path: "/logs/\(session).jsonl", isSubagent: false)
+        partial.ingest(FastTranscriptParser.parse(data([answer])))
+        XCTAssertNil(partial.build()?.completions.last?.tokens)
+        XCTAssertNil(partial.build()?.completions.last?.turnSummary)
+        let codex = SessionCompletion(sessionID: "s", vendor: "Codex", turnID: "t", task: "Task", model: "gpt-5.5",
+                                      startedAt: Date(timeIntervalSince1970: 0), completedAt: Date(timeIntervalSince1970: 3725))
+        XCTAssertEqual(codex.turnSummary, "1h 02m")
     }
 
     func testClaudePromptToolCompletionAndInterruptionDriveTheTurnState() throws {
