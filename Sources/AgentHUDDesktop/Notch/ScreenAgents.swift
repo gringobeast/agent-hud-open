@@ -80,9 +80,17 @@ struct ScreenAgents {
             }
     }
 
-    /// This screen's glow under its own settings, at its own pace, shown only while a shown agent waits on the user.
+    /// Whether a shown agent's session finished a turn moments ago, its green pulse still running (`FinishPulse`).
+    var anyAgentFinished: Bool {
+        guard order.narrows else { return store.hasJustFinished }
+        return FinishPulse.shared.vendors.contains { order.shows($0) }
+    }
+
+    /// This screen's glow under its own settings, at its own pace, shown only while a shown agent waits on the user,
+    /// or for a moment after a shown agent finished a turn.
     func glowAppearance(light: Bool, on screen: String) -> GlowAppearance {
         guard order.narrows else { return store.glowAppearance(light: light, on: screen) }
-        return store.glowAppearance(on: screen, anyAgentActive: anyAgentActive, waiting: anyAgentWaiting)
+        return store.glowAppearance(on: screen, anyAgentActive: anyAgentActive, waiting: anyAgentWaiting,
+                                    finished: anyAgentFinished)
     }
 }

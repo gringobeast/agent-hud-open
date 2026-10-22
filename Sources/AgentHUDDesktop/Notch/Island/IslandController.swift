@@ -97,6 +97,9 @@ final class IslandController {
         let isPaused: Bool
         let glowHidden: Bool
         let appearance: GlowAppearance
+        /// The agents whose green finish pulse runs (`FinishPulse`): its start and end re-apply every screen, a screen
+        /// that narrows to some agents included, whose glow can change while the one of every agent does not.
+        let finishing: Set<String>
         /// The settings as the app draws them, the app's draft included: a change of it, Bot logos among them,
         /// re-applies every screen's HUD at once.
         let settings: AgentHUDCore.Settings
@@ -118,7 +121,8 @@ final class IslandController {
     private var inputs: Inputs {
         let layout = settings.panelLayout
         return Inputs(rows: store.rows, sessions: store.sessions, isPaused: store.isPaused, glowHidden: store.glowHidden,
-                      appearance: store.glowAppearance(light: systemIsLight), settings: settings.effectiveSettings,
+                      appearance: store.glowAppearance(light: systemIsLight), finishing: FinishPulse.shared.vendors,
+                      settings: settings.effectiveSettings,
                       agents: settings.agents,
                       hudAgents: Dictionary(order.map { ($0, layout.effective(for: $0).hud.agents) },
                                             uniquingKeysWith: { first, _ in first }),

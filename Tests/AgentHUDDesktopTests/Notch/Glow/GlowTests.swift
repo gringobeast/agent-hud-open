@@ -82,6 +82,82 @@ final class GlowAppearanceTests: XCTestCase {
         XCTAssertEqual(a.stops, GlowGradient.waitingStops, "showing it again rebuilds nothing")
     }
 
+    func testFinishedIsOneGreenAtTheWorkingPace() {
+        let settings = Settings()
+        let finished = GlowAppearance.waitingOnUser(false, finished: true, anyAgentActive: false, glow: settings.glow)
+        XCTAssertFalse(finished.hidden)
+        XCTAssertEqual(finished.stops, GlowGradient.finishedStops)
+        XCTAssertEqual(Set(finished.stops.map(\.color.hexString)), ["#3ddc84"])
+        XCTAssertTrue(finished.breathing)
+        XCTAssertEqual(finished.breathSeconds, settings.breathSeconds, "one breath at the working pace, idle or not")
+    }
+
+    func testWaitingWinsOverFinished() {
+        let both = GlowAppearance.waitingOnUser(true, finished: true, anyAgentActive: true, glow: GlowSettings())
+        XCTAssertEqual(both, GlowAppearance.waitingOnUser(true, anyAgentActive: true, glow: GlowSettings()))
+        XCTAssertEqual(both.stops, GlowGradient.waitingStops)
+        let neither = GlowAppearance.waitingOnUser(false, finished: false, anyAgentActive: true, glow: GlowSettings())
+        XCTAssertTrue(neither.hidden)
+        XCTAssertEqual(neither.stops, GlowGradient.waitingStops, "hidden keeps the yellow, as before")
+    }
+
+    /// A pulse reports its agent from the finish until its duration has passed, and a second finish runs it on.
+    @MainActor
+    func testFinishPulseEndsAfterItsDuration() {
+        var now = Date(timeIntervalSince1970: 1_000_000)
+        let pulse = FinishPulse()
+        pulse.clock = { now }
+        defer { pulse.clear() }
+        pulse.finished(["Claude"])
+        XCTAssertEqual(pulse.vendors, ["Claude"])
+        now += FinishPulse.duration - 1
+        pulse.finished(["Codex"])
+        XCTAssertEqual(pulse.vendors, ["Claude", "Codex"])
+        now += 1
+        pulse.settle()
+        XCTAssertEqual(pulse.vendors, ["Codex"], "Claude's pulse ended on time")
+        pulse.finished(["Codex"])
+        now += FinishPulse.duration - 0.5
+        pulse.settle()
+        XCTAssertEqual(pulse.vendors, ["Codex"], "a second finish runs the pulse on")
+        now += 1
+        pulse.settle()
+        XCTAssertTrue(pulse.vendors.isEmpty)
+    }
+
+    /// The live glow pulses green after a finish while nothing waits, yellow wins while something does, and hiding
+    /// the glow from the menu hides the pulse too.
+    @MainActor
+    func testLiveGlowPulsesGreenAfterAFinish() async {
+        let requests = PermissionRequests.shared
+        for request in requests.pending { requests.withdraw(request.id) }
+        defer {
+            for request in requests.pending { requests.withdraw(request.id) }
+            FinishPulse.shared.clear()
+        }
+        let defaults = UserDefaults(suiteName: "AgentHUDTests.\(UUID().uuidString)")!
+        let store = UsageStore(provider: DemoUsageProvider(), settings: SettingsStore(defaults: defaults, defaultAgents: DemoData.agents))
+        await store.refresh()
+        let sessionWaits = store.view.sessions.contains { $0.phase.state == .waitingForApproval }
+        FinishPulse.shared.finished(["Claude"])
+        XCTAssertTrue(store.hasJustFinished)
+        let pulsing = store.glowAppearance(light: false)
+        XCTAssertFalse(pulsing.hidden)
+        XCTAssertEqual(pulsing.stops, sessionWaits ? GlowGradient.waitingStops : GlowGradient.finishedStops)
+
+        requests.seedDemo(now: store.now)
+        XCTAssertEqual(store.glowAppearance(light: false).stops, GlowGradient.waitingStops, "yellow wins")
+        for request in requests.pending { requests.withdraw(request.id) }
+
+        store.glowHidden = true
+        XCTAssertTrue(store.glowAppearance(light: false).hidden)
+        store.glowHidden = false
+
+        FinishPulse.shared.clear()
+        XCTAssertFalse(store.hasJustFinished)
+        XCTAssertEqual(store.glowAppearance(light: false).hidden, !sessionWaits)
+    }
+
     /// The live glow shows only while something waits on the user; a pause no longer greys it, and hiding the glow
     /// from the menu still hides it whatever waits.
     @MainActor

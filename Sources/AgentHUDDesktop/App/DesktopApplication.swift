@@ -18,6 +18,8 @@ public final class DesktopApplication {
     private var islandEvents = IslandEventTracker()
     /// The requests already on the island, so a change to the waiting list says which ones arrived and which left.
     private var shownRequests: [String] = []
+    /// Which arriving requests ring the waiting sound.
+    private var requestChime: RequestChime
     /// The scenario a demo launched with `--demo-script` is playing.
     private var demoScript: DemoScriptRunner?
     /// The movie a launch with `--record` is writing.
@@ -60,6 +62,7 @@ public final class DesktopApplication {
         self.onIslandEvents = onIslandEvents
         startedAt = store.clock()
         islandEvents = IslandEventTracker(startedAt: startedAt)
+        requestChime = RequestChime(startedAt: startedAt)
         onboardingWindow = OnboardingWindowController(settings: settings, store: store,
             sources: options.demo ? { DemoData.sources } : { SourceDetector.detect() })
         onboardingWindow.onFinish = { [weak self] in
@@ -266,6 +269,9 @@ public final class DesktopApplication {
         for id in shownRequests where !ids.contains(id) { notch?.withdraw(requestID: id) }
         for request in pending where !shownRequests.contains(request.id) { notch?.present(.permission(request)) }
         shownRequests = ids
+        if requestChime.rings(for: pending, now: store.clock(), paused: store.isPaused), !options.demo {
+            NSSound(named: "Ping")?.play()
+        }
         QuestionDraft.keep(Set(ids))
         PlanDraft.keep(Set(ids))
         // A request that only joined or left the queue changes no card, but it does change how many are waiting.
@@ -303,6 +309,7 @@ public final class DesktopApplication {
         for alert in update.quotaAlerts { notch?.present(alert) }
         for grant in update.resetCreditGrants { notch?.present(.resetCredits(grant)) }
         for completion in update.completions { notch?.present(.completion(completion)) }
+        FinishPulse.shared.finished(update.completions.map(\.agentVendor))
         onIslandEvents?(update, report, now)
     }
 

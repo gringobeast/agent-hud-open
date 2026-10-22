@@ -73,20 +73,27 @@ public struct GlowAppearance: Hashable, Sendable {
     }
 
     /// The glow the live HUD draws: hidden unless a session waits on its user, and then one warm yellow
-    /// (`GlowGradient.waitingStops`) in place of the quota's colours, at the brightness and pace `resolve` gives it.
+    /// (`GlowGradient.waitingStops`) in place of the quota's colours, at the brightness and pace `resolve` gives it;
+    /// or, with nothing waiting, one green (`GlowGradient.finishedStops`) for the moment after a session finished a turn.
     /// A pause does not grey it: a question asked of the user is still asked, and its card still shows.
-    /// - waiting: a session waits for an approval or an answer, or a permission request waits on the HUD.
+    /// - waiting: a session waits for an approval or an answer, or a permission request waits on the HUD. It always
+    ///   wins over `finished`: a question still open matters more than a reply already given.
+    /// - finished: a session finished a turn moments ago (`FinishPulse`); drawn at the working pace, so the short
+    ///   pulse is about one breath whatever else runs.
     /// - anyAgentActive: as in `resolve`; a waiting session is in flight, so it is the working pace whenever this shows.
     public static func waitingOnUser(
         _ waiting: Bool,
+        finished: Bool = false,
         anyAgentActive: Bool,
         glow: GlowSettings
     ) -> GlowAppearance {
-        let paced = resolve(levels: [.ok], paused: false, anyAgentActive: anyAgentActive, glow: glow)
+        let pulses = finished && !waiting
+        let paced = resolve(levels: [.ok], paused: false, anyAgentActive: anyAgentActive || pulses, glow: glow)
         // The stops stay yellow while hidden, so showing and hiding it never rebuilds the glow's materials.
         return GlowAppearance(
-            stops: GlowGradient.waitingStops, peakOpacity: paced.peakOpacity, troughOpacity: paced.troughOpacity,
-            breathing: paced.breathing, breathSeconds: paced.breathSeconds, hidden: !waiting
+            stops: pulses ? GlowGradient.finishedStops : GlowGradient.waitingStops,
+            peakOpacity: paced.peakOpacity, troughOpacity: paced.troughOpacity,
+            breathing: paced.breathing, breathSeconds: paced.breathSeconds, hidden: !waiting && !pulses
         )
     }
 }
@@ -104,6 +111,15 @@ public enum GlowGradient {
     public static let waitingStops = [
         GradientStop(color: waitingColor, location: 0),
         GradientStop(color: waitingColor, location: 1),
+    ]
+
+    /// The one colour the glow takes for a moment after a session finished a turn (`GlowAppearance.waitingOnUser`).
+    public static let finishedColor = RGBA(hex: 0x3DDC84)
+
+    /// `finishedColor` from end to end: the glow says a reply is ready, not how much quota is left.
+    public static let finishedStops = [
+        GradientStop(color: finishedColor, location: 0),
+        GradientStop(color: finishedColor, location: 1),
     ]
 
     /// Stop i of n sits at (i + 0.5) / n so neighbouring colors blend naturally; the ends clamp to the outer colors.
