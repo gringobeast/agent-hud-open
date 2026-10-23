@@ -190,6 +190,7 @@ public struct TranscriptAccumulator: Hashable, Sendable, Codable {
                 if !isSubagent, let text = Self.visibleText(event) {
                     currentTurn?.message = String(text.prefix(Self.turnMessageLength))
                 }
+                if !isSubagent, event.role != .other { noteReply(event) }
             }
             guard let counted else { continue }
             let key = counted.key, mapped = counted.agentId
@@ -248,6 +249,21 @@ public struct TranscriptAccumulator: Hashable, Sendable, Codable {
         guard event.role == .assistant, event.model != "<synthetic>",
               let text = event.text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
         return text
+    }
+
+    /// Shows the turn's reply so far on its activity (`SessionActivity.reply`) while the conversation's newest line is the
+    /// agent's words or its question to the user, and nothing after anything else: a call to another tool, an answer
+    /// that ends the turn, an error or the user's side. A log read late then shows no older words above a new question,
+    /// only none until the lines before it arrive. Claude Code writes a question's call only once it is answered, so
+    /// while it waits the newest line is the words before it.
+    private mutating func noteReply(_ event: TranscriptEvent) {
+        let stands: Bool
+        switch activity?.line {
+        case .text?, .thinking?: stands = true
+        case .call?: stands = event.toolName.flatMap(PermissionRequest.group(ofTool:)) == "ASK"
+        default: stands = false
+        }
+        activity?.reply = stands ? SessionCompletion.clipped(currentTurn?.reply.text) : nil
     }
 
     /// The most of one block a turn's `message` keeps; the whole reply goes to its completion instead.

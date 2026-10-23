@@ -128,9 +128,13 @@ struct IslandAlertDetailView: View {
 /// A finished turn's reply as the agent wrote it, its Markdown drawn inline: a short one in a box its own size, a long
 /// one scrolling within `maxHeight`, so the card never grows past the screen. The pointer over the card holds it open
 /// (`IslandAlertQueue.hold(_:)`), and scrolling does not move the pointer, so the reply stays while it is read.
-private struct CompletionReplyText: View {
+/// A question card shows the agent's words before its question the same way, in its own ink (`ink`).
+struct CompletionReplyText: View {
     let text: String
     var maxHeight: CGFloat = 320
+    var ink: Color? = nil
+    var size: CGFloat = 12
+    var identifier = "island-alert-reply"
     @Environment(\.hudTheme) private var theme
 
     /// The last reply drawn and its rendering: the island redraws its card as the pointer moves, the reply stays.
@@ -142,17 +146,17 @@ private struct CompletionReplyText: View {
             ScrollView { reply }.frame(height: maxHeight)
         }
         .frame(maxHeight: maxHeight, alignment: .top)
-        .accessibilityIdentifier("island-alert-reply")
+        .accessibilityIdentifier(identifier)
     }
 
     private var reply: some View {
-        Text(Self.markdown(text)).font(.ui(12)).foregroundStyle(theme.alertInk(0.68))
+        Text(Self.markdown(text)).font(.ui(size)).foregroundStyle(ink ?? theme.alertInk(0.68))
             .frame(maxWidth: .infinity, alignment: .leading)
             .fixedSize(horizontal: false, vertical: true)
             .textSelection(.enabled)
     }
 
-    @MainActor private static func markdown(_ text: String) -> AttributedString {
+    @MainActor static func markdown(_ text: String) -> AttributedString {
         if let rendered, rendered.text == text { return rendered.value }
         let value = PermissionPlanCard.rendered(text)
         rendered = (text, value)

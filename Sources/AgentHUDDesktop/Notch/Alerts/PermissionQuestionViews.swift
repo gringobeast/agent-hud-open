@@ -16,6 +16,8 @@ final class QuestionDraft {
     /// The user's own words, by question, and the questions where those words are the answer rather than a draft.
     var own: [Int: String] = [:]
     var ownPicked: Set<Int> = []
+    /// Whether the agent's words before the question are open in full rather than their first lines.
+    var showsReply = false
 
     private static var drafts: [String: QuestionDraft] = [:]
 
@@ -94,6 +96,19 @@ extension EnvironmentValues {
     }
 }
 
+/// The words the agent wrote before the question a request asks (`SessionActivity.reply`), looked up as a card is drawn:
+/// a log read after the hook fired brings them in the moment its lines are read. Nil without a store, as in a snapshot.
+struct QuestionReplyKey: EnvironmentKey {
+    static let defaultValue: @MainActor (PermissionRequest) -> String? = { _ in nil }
+}
+
+extension EnvironmentValues {
+    var questionReply: @MainActor (PermissionRequest) -> String? {
+        get { self[QuestionReplyKey.self] }
+        set { self[QuestionReplyKey.self] = newValue }
+    }
+}
+
 /// A question a client put to its user, answered the way the client's own dialog answers it: one of the offered
 /// answers, several where the question allows it, or the user's own words. Several questions are answered one after
 /// the other and sent together. Any of them can be skipped: the client hears which were left open, which is a gentler
@@ -102,7 +117,16 @@ struct PermissionQuestionCard: View {
     let request: PermissionRequest
     let onDecide: (PermissionDecision) -> Void
     @Environment(\.islandTyping) private var islandTyping
+    @Environment(\.questionReply) private var questionReply
     @Environment(\.permissionColor) private var color
+
+    /// What the agent said in its turn before asking, from the session the request names: only a question its hook
+    /// asks, since a client's own window shows its recap instead. Nil for a session the report does not hold.
+    @MainActor
+    static func reply(for request: PermissionRequest, in store: UsageStore?) -> String? {
+        guard request.nativeApproval == nil else { return nil }
+        return store?.view.session(request.sessionID)?.session.activity?.reply
+    }
 
     private var draft: QuestionDraft { QuestionDraft.draft(for: request.id) }
     private var questions: [PermissionQuestion] { request.questions }
@@ -116,6 +140,10 @@ struct PermissionQuestionCard: View {
             if request.nativeApproval == .clientReply, let recap = request.detail {
                 Text(recap).font(.ui(11)).foregroundStyle(color.secondary)
                     .lineLimit(4).fixedSize(horizontal: false, vertical: true)
+            }
+            // What the agent answered just before it asks, so the question can be read without going back to the chat.
+            if let reply = questionReply(request) {
+                QuestionReplyText(text: reply, expanded: draft.showsReply) { draft.showsReply.toggle() }
             }
             HStack(alignment: .firstTextBaseline, spacing: 7) {
                 if questions.count > 1 {
@@ -238,6 +266,52 @@ struct PermissionQuestionCard: View {
     /// The next question, or, after the last one, the answers given to the client.
     private func next() {
         if isLast { onDecide(.answer(draft.answers(for: questions))) } else { draft.page = page + 1 }
+    }
+}
+
+/// The agent's words before its question, its Markdown drawn inline: the first four lines, and for longer words a way
+/// to open the rest, which then scrolls within `maxHeight` so the question and its answers stay on the card.
+private struct QuestionReplyText: View {
+    let text: String
+    let expanded: Bool
+    let onToggle: () -> Void
+    var maxHeight: CGFloat = 260
+    @Environment(\.permissionColor) private var color
+
+    /// Whether the words run past four lines at the card's width, as far as their length tells: about 55 characters a line.
+    private var isLong: Bool {
+        text.split(separator: "\n", omittingEmptySubsequences: false)
+            .reduce(0) { $0 + max(1, ($1.count + 54) / 55) } > 4
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if expanded {
+                CompletionReplyText(text: text, maxHeight: maxHeight, ink: color.secondary, size: 11,
+                                    identifier: "island-question-reply")
+            } else {
+                Text(CompletionReplyText.markdown(text)).font(.ui(11)).foregroundStyle(color.secondary)
+                    .lineLimit(4).frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                    .accessibilityIdentifier("island-question-reply")
+            }
+            if isLong || expanded {
+                Button(action: onToggle) {
+                    HStack(spacing: 3) {
+                        Text(expanded ? L10n.text("收起", "Show less") : L10n.text("展开全文", "Show more"))
+                        Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.system(size: 8, weight: .bold))
+                    }
+                    .font(.ui(10, .medium)).foregroundStyle(color.tertiary)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("island-question-reply-toggle")
+            }
+        }
+        .padding(9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(color.inset, in: RoundedRectangle(cornerRadius: 7))
     }
 }
 

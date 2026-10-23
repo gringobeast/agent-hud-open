@@ -129,8 +129,14 @@ public struct SessionActivity: Hashable, Codable, Sendable {
     public var compactingSince: Date?
     /// The question the client asks its user in its own window, until the user answers it there; nil when none is open.
     public private(set) var ask: Ask?
+    /// What the agent has said since the turn's last input, its prompt or a tool's result, while those words are still
+    /// the conversation's newest or the question that follows them: the answer it wrote before asking, which the card
+    /// that asks shows above the question. Nil once a call to any other tool, the turn's end or the next input follows
+    /// them. Kept only while the app runs, as an ask's words are: never encoded.
+    public var reply: String?
     /// The newest work the read under way brought in, which `settle()` takes into `work`.
     private var latest: Work?
+    enum CodingKeys: String, CodingKey { case calls, work, toolAt, line, retrying, subagentsAt, compactingSince, ask, latest }
 
     public init() {}
 

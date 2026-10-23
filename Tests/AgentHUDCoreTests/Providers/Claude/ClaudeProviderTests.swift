@@ -533,6 +533,61 @@ final class ClaudeTranscriptTests: XCTestCase {
         XCTAssertTrue(cut.hasSuffix("…"))
     }
 
+    func testAPendingQuestionShowsTheWordsWrittenBeforeItSinceTheLastToolResult() throws {
+        let session = "8e4f3a5b-0d74-4c6b-9f88-3a9b5c1d2e43"
+        func assistant(_ id: String, _ block: String, stop: String, at: String) -> String {
+            #"{"parentUuid":"p","isSidechain":false,"message":{"model":"claude-opus-5-5","id":"\#(id)","type":"message","role":"assistant","content":[\#(block)],"stop_reason":"\#(stop)","stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":4}},"requestId":"req_\#(id)","type":"assistant","uuid":"u-\#(at)","timestamp":"2026-10-22T19:10:\#(at)Z","userType":"external","entrypoint":"cli","cwd":"/Users/dev/project","sessionId":"\#(session)","version":"2.1.299"}"#
+        }
+        func prompt(_ text: String, at: String) -> String {
+            #"{"parentUuid":null,"isSidechain":false,"type":"user","message":{"role":"user","content":"\#(text)"},"uuid":"u-\#(at)","timestamp":"2026-10-22T19:10:\#(at)Z","entrypoint":"cli","cwd":"/Users/dev/project","sessionId":"\#(session)"}"#
+        }
+        let first = prompt("Why did the build fail?", at: "00.000")
+        let before = assistant("msg_a", #"{"type":"text","text":"Let me read the build log first."}"#, stop: "tool_use", at: "01.000")
+        let call = assistant("msg_a", #"{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"make build"}}"#, stop: "tool_use", at: "01.010")
+        let result = #"{"parentUuid":"p","isSidechain":false,"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_1","type":"tool_result","content":"error: missing import"}]},"uuid":"u-r","timestamp":"2026-10-22T19:10:05.000Z","entrypoint":"cli","cwd":"/Users/dev/project","sessionId":"\#(session)"}"#
+        let thinking = assistant("msg_b", #"{"type":"thinking","thinking":"","signature":"c2lnbmF0dXJl"}"#, stop: "tool_use", at: "08.000")
+        let answer = assistant("msg_b", ###"{"type":"text","text":"## Cause\n\nThe build failed on a **missing import** in `Sources/App.swift`."}"###, stop: "tool_use", at: "08.100")
+        let attachment = #"{"parentUuid":"p","isSidechain":false,"type":"attachment","attachment":{"type":"hook_success"},"uuid":"u-att","timestamp":"2026-10-22T19:10:08.200Z","entrypoint":"cli","sessionId":"\#(session)"}"#
+        let question = assistant("msg_b", #"{"type":"tool_use","id":"toolu_2","name":"AskUserQuestion","input":{"questions":[{"question":"What next?","options":[{"label":"Fix it"},{"label":"Stop"}]}]}}"#, stop: "tool_use", at: "08.300")
+        let answered = #"{"parentUuid":"p","isSidechain":false,"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_2","type":"tool_result","content":"Fix it"}]},"uuid":"u-a","timestamp":"2026-10-22T19:10:30.000Z","entrypoint":"cli","cwd":"/Users/dev/project","sessionId":"\#(session)"}"#
+        func data(_ lines: [String]) -> Data { Data((lines.joined(separator: "\n") + "\n").utf8) }
+        let expected = "## Cause\n\nThe build failed on a **missing import** in `Sources/App.swift`."
+
+        var accumulator = TranscriptAccumulator(path: "/logs/\(session).jsonl", isSubagent: false)
+        // Words before a call to another tool stand only until that call: a question read before its result is no
+        // reason to show them.
+        accumulator.ingest(FastTranscriptParser.parse(data([first, before])))
+        XCTAssertEqual(accumulator.build()?.activity?.reply, "Let me read the build log first.")
+        accumulator.ingest(FastTranscriptParser.parse(data([call])))
+        XCTAssertNil(accumulator.build()?.activity?.reply, "a call to another tool leaves the words before it behind")
+        accumulator.ingest(FastTranscriptParser.parse(data([result, thinking])))
+        XCTAssertNil(accumulator.build()?.activity?.reply, "nothing visible was said after the result yet")
+
+        // Claude Code writes the question's call only once it is answered: while it waits, the answer is the newest line.
+        accumulator.ingest(FastTranscriptParser.parse(data([answer, attachment])))
+        XCTAssertEqual(accumulator.build()?.activity?.reply, expected, "the words after the last tool result, not the ones before it")
+        let activity = ClaudeCodeProvider.activity(of: try XCTUnwrap(accumulator.build()), subagentsAt: nil, compaction: nil)
+        XCTAssertEqual(activity.reply, expected, "the session the HUD reports carries them")
+        // A build that writes the question's call first, as one more line of the same response, keeps them too.
+        accumulator.ingest(FastTranscriptParser.parse(data([question])))
+        XCTAssertEqual(accumulator.build()?.activity?.reply, expected)
+
+        // The words live only in memory: the persisted summary never holds them, and its activity comes back without.
+        let encoded = try JSONEncoder().encode(accumulator)
+        XCTAssertFalse(String(decoding: encoded, as: UTF8.self).contains("missing import"))
+        XCTAssertNil(try JSONDecoder().decode(TranscriptAccumulator.self, from: encoded).build()?.activity?.reply)
+        XCTAssertFalse(String(decoding: try JSONEncoder().encode(activity), as: UTF8.self).contains("missing import"))
+
+        // The answer to the question is the turn's next input: what it followed is no longer the newest.
+        accumulator.ingest(FastTranscriptParser.parse(data([answered])))
+        XCTAssertNil(accumulator.build()?.activity?.reply)
+
+        // A question asked with nothing written before it shows nothing.
+        var bare = TranscriptAccumulator(path: "/logs/\(session).jsonl", isSubagent: false)
+        bare.ingest(FastTranscriptParser.parse(data([first, thinking])))
+        XCTAssertNil(bare.build()?.activity?.reply)
+    }
+
     func testACompletionCarriesTheTurnsDurationTokensAndListPriceCost() throws {
         let previousLanguage = L10n.language
         L10n.setLanguage(.en)

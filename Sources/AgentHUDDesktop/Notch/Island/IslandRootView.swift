@@ -523,7 +523,9 @@ struct IslandRootView: View {
     /// alone, in a hosting view of its own (`IslandWindowController.contentHeight(for:)`), so the look is set here and
     /// not only round `body`.
     var content: some View {
+        // A question card shows what the agent said before asking, read from this store as the card is drawn.
         cardContent.islandLook(look)
+            .environment(\.questionReply, { [store] request in PermissionQuestionCard.reply(for: request, in: store) })
     }
 
     @ViewBuilder
