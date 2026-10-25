@@ -125,7 +125,7 @@ final class StatusItemController: NSObject {
             .font: NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .regular),
             .baselineOffset: 0,
         ])
-        button.toolTip = AppResources.applicationName + L10n.text(" · 最高已用额度", " · highest usage")
+        button.toolTip = AppResources.applicationName + L10n.text(" · 最高每周额度", " · highest weekly usage")
     }
 
     /// What the HUD of `screen` shows of the agents at rest: the agents the layout it draws now lists, a draft included,
@@ -138,10 +138,10 @@ final class StatusItemController: NSObject {
     }
 
     /// What the item shows for the HUD of `screen`: its glow's colours, as that HUD draws them at rest, and the most used
-    /// window of the agents it shows.
+    /// weekly window of every agent (`ReportView.maxWeeklyUsedPct`), whichever agents that HUD shows.
     func figure(on screen: Screen?) -> Figure {
         let agents = agents(on: screen)
-        return Figure(levels: agents.glowSegments.map(\.level), usedPct: store.view.maxUsedPct(shownBy: agents.order))
+        return Figure(levels: agents.glowSegments.map(\.level), usedPct: store.view.maxWeeklyUsedPct)
     }
 
     // MARK: Opening and closing

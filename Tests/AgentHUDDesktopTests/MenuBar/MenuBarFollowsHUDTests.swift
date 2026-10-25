@@ -18,20 +18,24 @@ final class MenuBarFollowsHUDTests: XCTestCase {
     /// Claude's two windows, 70 % and 20 % used, Codex's, 90 % used, Kimi's, not read yet, and DeepSeek's balance, whose
     /// estimated cost is 1 in the last hour, 2 three days ago and 4 twenty days ago, all in English, over settings of
     /// their own in which the `simple` display is a Simple panel.
-    private func make() throws -> (controller: StatusItemController, store: UsageStore, settings: SettingsStore) {
+    /// - windows: each row's vendor, its window, what is left of it and whether every model draws on it; a `Weekly` or
+    ///   `Fable weekly` window is read over 7 days, a `5h` one over 5 hours.
+    private func make(windows: [(vendor: String, model: String, remaining: Double?, allModels: Bool)] = [
+        ("Claude", "5h", 30, true), ("Claude", "Weekly", 80, true), ("Codex", "Weekly", 10, true), ("Kimi", "Weekly", nil, true),
+        ("DeepSeek", "API", nil, true),
+    ]) throws -> (controller: StatusItemController, store: UsageStore, settings: SettingsStore) {
         _ = NSApplication.shared
         let suite = "MenuBarFollowsHUDTests.\(UUID().uuidString)", defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         addTeardownBlock {
             defaults.removePersistentDomain(forName: suite)
             L10n.setLanguage(.system)
         }
-        // Each row: its vendor, its window and what is left of it.
-        let windows: [(vendor: String, model: String, remaining: Double?)] = [
-            ("Claude", "5h", 30), ("Claude", "Weekly", 80), ("Codex", "Weekly", 10), ("Kimi", "Weekly", nil),
-            ("DeepSeek", "API", nil),
-        ]
         let agents = windows.map {
-            AgentDescriptor(id: "\($0.vendor):\($0.model)", vendor: $0.vendor, model: $0.model, source: "", enabled: true)
+            AgentDescriptor(id: "\($0.vendor):\($0.model)", vendor: $0.vendor, model: $0.model, source: "", enabled: true,
+                            allModels: $0.allModels)
+        }
+        func duration(_ model: String) -> TimeInterval? {
+            model.hasSuffix("eekly") ? 7 * 86_400 : model == "5h" ? 5 * 3_600 : nil
         }
         let settings = SettingsStore(defaults: defaults, defaultAgents: agents)
         let key = simple.key
@@ -46,7 +50,10 @@ final class MenuBarFollowsHUDTests: XCTestCase {
         store.replace(report: UsageReport(
             generatedAt: now,
             snapshots: zip(agents, windows).compactMap { agent, window in
-                window.remaining.map { .init(agentId: agent.id, remainingPct: $0, resetAt: now.addingTimeInterval(3_600), updatedAt: now) }
+                window.remaining.map {
+                    .init(agentId: agent.id, remainingPct: $0, resetAt: now.addingTimeInterval(3_600),
+                          windowDuration: duration(window.model), updatedAt: now)
+                }
             },
             sessions: [], discoveredAgents: agents,
             billing: [APIBilling(vendor: "DeepSeek", balances: [.init(currency: "USD", total: 50, granted: 0, toppedUp: 0)],
@@ -124,8 +131,8 @@ final class MenuBarFollowsHUDTests: XCTestCase {
 
     // MARK: The status item
 
-    /// The item's figure is the most used window of the agents the HUD shows whose readings show a level, and its
-    /// colours its glow's parts, in its order. Without a list, every agent, as before; a draft shows at once.
+    /// The item's colours are its glow's parts, in its order, of the agents the HUD shows: without a list every agent, as
+    /// before; a draft shows at once. Its figure is the most used weekly window of every agent, whatever the list.
     func testTheItemsFigureAndColoursFollowTheAgentsTheHUDShows() throws {
         let (controller, store, settings) = try make()
         let segments = store.view.glowSegments
@@ -140,17 +147,31 @@ final class MenuBarFollowsHUDTests: XCTestCase {
         XCTAssertEqual(store.maxUsedPct, 90)
 
         XCTAssertTrue(settings.panelLayout.propose(hud(["Claude"])))
-        XCTAssertEqual(controller.figure(on: simple), .init(levels: levels("Claude"), usedPct: 70))
+        XCTAssertEqual(controller.figure(on: simple), .init(levels: levels("Claude"), usedPct: 90),
+                       "Codex's weekly window still sets the figure; Claude's 5-hour 70 % does not")
         XCTAssertEqual(controller.figure(on: nil), everyone)
         XCTAssertEqual(store.maxUsedPct, 90, "the store's own figure counts every agent")
 
         XCTAssertTrue(settings.panelLayout.propose(hud(["DeepSeek", "Claude"])))
-        XCTAssertEqual(controller.figure(on: simple), .init(levels: levels("DeepSeek", "Claude"), usedPct: 70),
+        XCTAssertEqual(controller.figure(on: simple), .init(levels: levels("DeepSeek", "Claude"), usedPct: 90),
                        "the colours in the list's order; a balance has no share used")
 
         XCTAssertTrue(settings.panelLayout.propose(hud(["Kimi"])))
-        XCTAssertEqual(controller.figure(on: simple), .init(levels: [], usedPct: nil), "Kimi has no reading yet")
+        XCTAssertEqual(controller.figure(on: simple), .init(levels: [], usedPct: 90), "Kimi has no reading yet")
         XCTAssertEqual(controller.figure(on: notch), everyone, "the island shows no Kimi, so the list narrows nothing")
+    }
+
+    /// Only weekly windows every model draws on set the figure: Claude's 5-hour session at 95 % and its Fable weekly
+    /// cap at 99 % do not, so the higher of Claude's weekly 40 % and Grok's 60 % does.
+    func testTheFigureIsTheHighestWeeklyWindow() throws {
+        let (controller, store, _) = try make(windows: [
+            ("Claude", "5h", 5, true), ("Claude", "Weekly", 60, true), ("Claude", "Fable weekly", 1, false),
+            ("Grok", "Weekly", 40, true),
+        ])
+        XCTAssertEqual(store.maxUsedPct, 99)
+        XCTAssertEqual(store.view.maxWeeklyUsedPct, 60)
+        XCTAssertEqual(controller.figure(on: simple).usedPct, 60)
+        XCTAssertEqual(controller.figure(on: nil).usedPct, 60)
     }
 
     // MARK: A balance's tooltip
@@ -200,7 +221,7 @@ final class MenuBarFollowsHUDTests: XCTestCase {
         }
         await written(" 90%")
         XCTAssertTrue(settings.panelLayout.propose(.own(hud(["Claude"])), for: primary.key))
-        await written(" 70%")
+        await written(" 90%")
         settings.panelLayout.discard(.screen(primary.key))
         await written(" 90%")
 

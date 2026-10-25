@@ -173,6 +173,17 @@ public struct ReportView: Sendable {
         rows.filter { $0.assessment.showsLevel && order.shows($0.agent.vendor) }.compactMap(\.usedPct).max()
     }
 
+    /// The most consumed weekly window shared by all of an agent's models, of every agent, among those whose readings
+    /// show a level: the menu bar's figure in this build, so a 5-hour session or one model's own weekly cap never sets it.
+    public var maxWeeklyUsedPct: Double? {
+        rows.filter { row in
+            row.assessment.showsLevel && row.agent.allModels
+                && report?.snapshot(for: row.agent.id)?.windowDuration == Self.week
+        }.compactMap(\.usedPct).max()
+    }
+
+    private static let week: TimeInterval = 7 * 86_400
+
     /// Whether a window's reading enters calculations: only the reading of a row that shows a level does. Any other is
     /// shown greyed, without a forecast.
     func counts(_ agentId: String) -> Bool { rows.contains { $0.id == agentId && $0.assessment.showsLevel } }
