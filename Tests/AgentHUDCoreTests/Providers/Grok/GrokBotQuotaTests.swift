@@ -15,6 +15,15 @@ final class GrokBotQuotaTests: XCTestCase {
         XCTAssertNotNil(quota.sourceInfo)
     }
 
+    /// Grok Bot 1.2.3 writes the quota cache under schema 3 with the same fields; schema 2 stays readable, others do not.
+    func testSchemaThreeCacheIsReadAndUnknownSchemaIsNot() throws {
+        let f = try fixture()
+        try writeQuota(f, schema: 3)
+        XCTAssertEqual(try XCTUnwrap(GrokBotQuota.read(in: f.directory, now: f.now)?.windows[0].remaining), 99.329611, accuracy: 0.000001)
+        try writeQuota(f, schema: 4)
+        XCTAssertNil(GrokBotQuota.read(in: f.directory, now: f.now))
+    }
+
     func testAccountSwitchSignOutExpiryAndUnsupportedTeamCannotReuseCache() throws {
         let f = try fixture()
         try writeQuota(f)
@@ -196,12 +205,12 @@ final class GrokBotQuotaTests: XCTestCase {
         return f
     }
 
-    private func writeQuota(_ f: GrokBotCacheFixture, now: Date? = nil, team: Any = NSNull(), extra: Any = NSNull()) throws {
+    private func writeQuota(_ f: GrokBotCacheFixture, now: Date? = nil, team: Any = NSNull(), extra: Any = NSNull(), schema: Int = 2) throws {
         let now = now ?? f.now
         let usage: [String: Any] = ["percentUsed": 0.670389, "nextResetMs": now.addingTimeInterval(3600).timeIntervalSince1970 * 1000,
             "isSandTrial": false, "hasNonZeroIncludedLimit": true, "isTeamSeat": false, "onDemand": extra, "grokPlanLabel": "SuperGrok"]
         try f.write(["kind": "present", "selectedTeamId": team, "expiresAtMs": now.addingTimeInterval(23 * 3600).timeIntervalSince1970 * 1000,
             "reading": ["readAtMs": now.addingTimeInterval(-3600).timeIntervalSince1970 * 1000, "usage": usage]],
-            key: GrokBotCache.quotaKey(account: f.account), schema: 2)
+            key: GrokBotCache.quotaKey(account: f.account), schema: schema)
     }
 }

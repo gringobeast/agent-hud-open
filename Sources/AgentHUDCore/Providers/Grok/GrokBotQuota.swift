@@ -36,8 +36,9 @@ enum GrokBotQuota {
 
     static func read(in directory: URL, now: Date) -> ProviderQuota? {
         guard let slot = GrokBotCache.currentAccount(in: directory) else { return nil }
-        let key = GrokBotCache.quotaKey(account: slot)
-        guard let value = try? GrokBotCache.value(at: GrokBotCache.url(for: key, in: directory), key: key, schema: 2),
+        let key = GrokBotCache.quotaKey(account: slot), url = GrokBotCache.url(for: key, in: directory)
+        // Grok Bot 1.2.3 writes the same fields under schema 3; earlier builds wrote schema 2.
+        guard let value = (try? GrokBotCache.value(at: url, key: key, schema: 3)) ?? (try? GrokBotCache.value(at: url, key: key, schema: 2)),
               let quota = parse(value, accountSlot: slot, now: now),
               GrokBotCache.currentAccount(in: directory) == slot else { return nil }
         return quota
