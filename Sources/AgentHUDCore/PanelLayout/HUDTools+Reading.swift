@@ -120,6 +120,9 @@ extension HUDTools {
         switch plan.kind {
         case .quota:
             block["name"] = .string(VendorCatalog.name(plan.key))
+            if let notice = store.view.accountlessNotices.first(where: { $0.vendor == plan.key })?.notice {
+                block["notice"] = .string(notice)
+            }
             let sections = store.accountSections(store.rowGroups.first { $0.vendor == plan.key }?.rows ?? [])
             // Rows of no account come under an empty id, which no layout names.
             block["accounts"] = .array(sections.filter { !$0.id.isEmpty }.map { section in

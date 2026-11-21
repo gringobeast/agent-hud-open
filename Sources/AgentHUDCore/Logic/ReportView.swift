@@ -38,6 +38,9 @@ public struct ReportView: Sendable {
     public let rows: [AgentRow]
     /// Rows grouped by displayed vendor, in row order.
     public let rowGroups: [(vendor: String, rows: [AgentRow])]
+    /// Vendors whose provider confirmed no current account, such as a signed-out client, and said why, by vendor name:
+    /// their rows retire with the account, so the panel keeps a block that carries only this notice and no reading.
+    public let accountlessNotices: [(vendor: String, notice: String)]
     /// Account cards follow the agent switches: a billing pool's card its pool's rows, any other its vendor's.
     public let billing: [APIBilling]
     /// One part of the glow: a quota row's or an API account's level, and the vendor whose alerts light it.
@@ -121,6 +124,8 @@ public struct ReportView: Sendable {
         enabledAgents = enabled
         self.rows = rows
         rowGroups = order.map { ($0, groups[$0] ?? []) }
+        accountlessNotices = (report?.accounts ?? [:]).filter { $0.value.isEmpty && groups[$0.key] == nil }.keys.sorted()
+            .compactMap { vendor in report?.sourceNotices[vendor].map { (vendor, $0) } }
         self.billing = billing
         glowSegments = segments
         sessions = (report?.sessions ?? []).filter { !$0.isBillingOnlyGrokBotSubagent }

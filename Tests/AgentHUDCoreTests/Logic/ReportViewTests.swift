@@ -120,6 +120,35 @@ final class ReportViewTests: XCTestCase {
         ])
     }
 
+    /// A signed-out Claude retires its account and with it every quota row, yet the panel keeps a Claude block that
+    /// says why, with no reading in it. A vendor that confirmed no account without saying why, or that still has rows,
+    /// gets no extra block.
+    func testASignedOutVendorKeepsABlockWithItsNoticeAndNoRows() {
+        let signedOut = ClaudeDataError.signedOut.errorDescription!
+        let former = ProviderAccount.identified(provider: "Claude", user: "me@example.com", workspace: nil)!
+        let retired = AgentDescriptor(id: former.windowID("weekly"), vendor: "Claude", model: "Weekly", source: "",
+                                      enabled: true, account: former)
+        let codex = AgentDescriptor(id: current.windowID("codex"), vendor: "Codex", model: "5h", source: "", enabled: true,
+                                    account: current)
+        let report = UsageReport(generatedAt: now,
+            snapshots: [.init(agentId: retired.id, remainingPct: 40, updatedAt: now.addingTimeInterval(-600)),
+                        .init(agentId: codex.id, remainingPct: 80, updatedAt: now)],
+            sessions: [], discoveredAgents: [retired, codex],
+            sourceNotices: ["Claude": signedOut, "Codex": "Hooks are off"], quotaNotices: [:], readingIssues: [:],
+            accounts: ["Claude": [], "Codex": [.init(account: current, observedAt: now)], "Grok": []])
+        let view = ReportView(report: report, agents: [retired, codex], settings: Settings(), now: now)
+
+        XCTAssertEqual(view.rows.map(\.id), [codex.id], "the signed-out account's rows and stale reading are not shown")
+        XCTAssertEqual(view.accountlessNotices.map(\.vendor), ["Claude"])
+        XCTAssertEqual(view.accountlessNotices.first?.notice, signedOut)
+        let claude = view.panelBlocks.first { $0.key == "Claude" }
+        XCTAssertEqual(claude?.kind, .quota)
+        XCTAssertEqual(claude?.rowKeys, [])
+        XCTAssertEqual(view.panelBlocks.map(\.key), ["Codex", "Claude"], "one block each, the notice's after the vendors with rows")
+        let plan = PanelLayoutPlan(layout: PanelLayout(), blocks: view.panelBlocks)
+        XCTAssertTrue(plan.blocks.contains { $0.key == "Claude" }, "the default layout draws the notice's block")
+    }
+
     // MARK: Fixtures
 
     /// Every kind of row: two Claude windows and one switched off, an API row, two Kimi plan pools of which the report

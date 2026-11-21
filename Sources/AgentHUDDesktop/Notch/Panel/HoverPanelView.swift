@@ -62,7 +62,10 @@ struct HoverPanelView: View {
         return vendor.map { AgentArtwork.markKey($0) == AgentArtwork.markKey(focusVendor) } ?? false
     }
 
-    var quotaGroups: [(vendor: String, rows: [AgentRow])] { store.rowGroups.filter { focused($0.vendor) } }
+    /// Each vendor's rows, and no rows for a vendor that has only a notice, such as a signed-out client, whose block says it.
+    var quotaGroups: [(vendor: String, rows: [AgentRow])] {
+        (store.rowGroups + store.view.accountlessNotices.map { ($0.vendor, []) }).filter { focused($0.vendor) }
+    }
     var billing: [APIBilling] { store.enabledBilling.filter { focused($0.vendor) } }
     private var consumers: [AgentDescriptor] { store.consumers.filter { focused($0.vendor) } }
 

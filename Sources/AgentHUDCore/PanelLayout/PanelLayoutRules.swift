@@ -137,8 +137,8 @@ public extension PanelLayout {
 
 public extension ReportView {
     /// The blocks the panel has, in default order: a quota block for each vendor's rows in row order, with its accounts'
-    /// sections, then a billing block for each API provider whose balance is shown, in the order of the balances, with
-    /// its accounts.
+    /// sections, then an empty quota block for each vendor that has only a notice (`accountlessNotices`), then a billing
+    /// block for each API provider whose balance is shown, in the order of the balances, with its accounts.
     var panelBlocks: [PanelBlockInfo] {
         var blocks = rowGroups.map { group in
             let accounts = accountSections(group.rows).map { section in
@@ -148,6 +148,7 @@ public extension ReportView {
             return PanelBlockInfo(key: group.vendor, kind: .quota, rowKeys: group.rows.map(\.agent.windowKey).withoutRepeats,
                                   accounts: accounts)
         }
+        blocks += accountlessNotices.map { PanelBlockInfo(key: $0.vendor, kind: .quota) }
         var keys = Set(blocks.map(\.key))
         for account in billing where keys.insert(account.panelBlockKey).inserted {
             let accounts = billing.filter { $0.panelBlockKey == account.panelBlockKey }.map {

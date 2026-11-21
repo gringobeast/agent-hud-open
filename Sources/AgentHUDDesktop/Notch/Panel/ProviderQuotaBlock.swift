@@ -187,6 +187,16 @@ struct ProviderQuotaBlock: View {
             .foregroundStyle(theme.secondary)
             .padding(.vertical, IslandRowLayout.headingVerticalPadding)
 
+            // A vendor without a current account, such as a signed-out client, has no rows: its notice says why.
+            if rows.isEmpty, let notice = store.view.accountlessNotices.first(where: { $0.vendor == vendor })?.notice {
+                Text(notice)
+                    .font(.ui(11))
+                    .foregroundStyle(theme.secondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .redactedOnPicture()
+                    .padding(.horizontal, IslandRowLayout.inset)
+            }
             // The accounts the layout keeps, each with its windows in the layout's order and without those it hides.
             let sections = store.accountSections(rows).filter { plan.shows(account: $0.id) }
             ForEach(sections) { section in
